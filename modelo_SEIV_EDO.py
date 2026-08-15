@@ -2,52 +2,74 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # =========================================================
-# Parametros do modelo
+# CONFIGURACAO GLOBAL DOS GRAFICOS
+# =========================================================
+plt.rcParams.update({
+    "font.size": 11,
+    "axes.titlesize": 13,
+    "axes.labelsize": 11,
+    "legend.fontsize": 10,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.dpi": 120,
+    "savefig.dpi": 300,
+})
+
+# =========================================================
+# PARAMETROS DO MODELO
 # =========================================================
 params = {
     # Dinamica do hospedeiro
-    "r": 0.15,         # taxa de reproducao
-    "K": 1000.0,       # capacidade de suporte
-    "mn": 0.05,        # mortalidade natural
-    "mi": 0.30,        # mortalidade induzida
+    "r": 0.15,
+    "K": 5e5,
+    "mn": 0.05,
+    "mi": 0.3,
 
     # Latencia
-    "sigma": 0.27,     # taxa de transicao E -> I
+    "sigma": 0.27,
 
     # Incidencia dependente de V (Holling tipo III)
-    "k": 0.1,
-    "beta": 0.8,
+    "k": 1,
+    "beta": 0.6,
     "b": 1e12,
 
     # Virus ambiental
-    "eps": 1e5,        # virus liberados por morte induzida
-    "delta": 0.70,     # taxa de decaimento
+    "eps": 1e2,
+    "delta": 0.7,
 
     # Condicoes iniciais
-    "S0": 800.0,
+    "S0": 8e4,
     "E0": 0.0,
     "I0": 0.0,
     "V0": 0.0,
 }
 
 # =========================================================
-# Funcao de incidencia
+# FUNCAO DE INCIDENCIA
 # =========================================================
 def incidence(V, beta, k, b):
-    """
-    lambda(V) = beta * k * V^2 / (b + V^2)
-    """
     return beta * k * V**2 / (b + V**2)
 
 # =========================================================
-# Lado direito do sistema
+# QUANTIDADE R(V)
+# =========================================================
+def R_V(S, V, p):
+    fator1 = (2.0 * p["beta"] * p["k"] * p["b"] * S * V) / (p["b"] + V**2)**2
+    fator2 = (
+        p["sigma"] * p["eps"] * p["mi"]
+        / ((p["sigma"] + p["mn"]) * (p["mn"] + p["mi"]) * p["delta"])
+    )
+    return fator1 * fator2
+
+# =========================================================
+# LADO DIREITO DO SISTEMA
 # =========================================================
 def rhs(t, y, p, u_func):
     S, E, I, V = y
 
     lam = incidence(V, p["beta"], p["k"], p["b"])
 
-    dS = p["r"] * S * (1.0 - S / p["K"]) - lam * S - p["mn"] * S
+    dS = p["r"] * S * (1 - S / p["K"]) - lam * S - p["mn"] * S
     dE = lam * S - p["sigma"] * E - p["mn"] * E
     dI = p["sigma"] * E - (p["mn"] + p["mi"]) * I
     dV = u_func(t) + p["eps"] * p["mi"] * I - p["delta"] * V
@@ -55,7 +77,7 @@ def rhs(t, y, p, u_func):
     return np.array([dS, dE, dI, dV], dtype=float)
 
 # =========================================================
-# Metodo de Runge-Kutta de quarta ordem
+# METODO DE RUNGE-KUTTA DE QUARTA ORDEM
 # =========================================================
 def rk4(f, t0, tf, y0, dt, args=()):
     t = np.arange(t0, tf + dt, dt)
@@ -72,20 +94,14 @@ def rk4(f, t0, tf, y0, dt, args=()):
         k4 = f(tn + dt, yn + dt * k3, *args)
 
         y[n + 1] = yn + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-
-        # Seguranca numerica
         y[n + 1] = np.maximum(y[n + 1], 0.0)
 
     return t, y
 
 # =========================================================
-# Funcoes de aplicacao viral
+# FUNCOES DE APLICACAO VIRAL
 # =========================================================
 def u_pulso_inicial_factory(Q0, dt, t_aplic=0.0):
-    """
-    Aproxima uma aplicacao instantanea por um pulso em um unico passo:
-    integral u(t) dt ~= Q0, logo u = Q0 / dt em [t_aplic, t_aplic + dt).
-    """
     def u(t):
         if t_aplic <= t < t_aplic + dt:
             return Q0 / dt
@@ -93,10 +109,6 @@ def u_pulso_inicial_factory(Q0, dt, t_aplic=0.0):
     return u
 
 def u_reaplicacoes_factory(Q0, dt, tempos):
-    """
-    Reaplicacoes modeladas como pulsos discretos:
-    em cada pulso, integral u(t) dt ~= Q0.
-    """
     def u(t):
         for ta in tempos:
             if ta <= t < ta + dt:
@@ -105,77 +117,96 @@ def u_reaplicacoes_factory(Q0, dt, tempos):
     return u
 
 # =========================================================
-# Geracao de figuras separadas
+# FUNCAO AUXILIAR PARA PADRONIZAR GRAFICOS
+# =========================================================
+def finalizar_grafico(titulo, xlabel, ylabel, nome_arquivo, usar_log=False):
+    plt.title(titulo, pad=10)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    if usar_log:
+        plt.yscale("log")
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best", frameon=True)
+    plt.tight_layout()
+    plt.savefig(nome_arquivo, dpi=300, bbox_inches="tight")
+    plt.show()
+
+# =========================================================
+# FIGURAS SEPARADAS POR CENARIO
 # =========================================================
 def plot_scenario_separado(t, S, E, I, V, p, titulo_prefixo, prefixo_arquivo):
     lam = incidence(V, p["beta"], p["k"], p["b"])
-
-    # Evita problemas com escala logaritmica quando V se aproxima de zero
     V_plot = np.maximum(V, 1e-20)
 
     # Figura 1: S, E, I
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, S, label="S(t)")
-    plt.plot(t, E, label="E(t)")
-    plt.plot(t, I, label="I(t)")
-    plt.title(f"Dinamica de S, E e I - {titulo_prefixo}")
-    plt.xlabel("Tempo (dias)")
-    plt.ylabel("Populacao")
-    plt.grid(True)
-    plt.legend(loc="best")
-    plt.tight_layout()
-    plt.savefig(f"{prefixo_arquivo}_sei.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.figure(figsize=(10, 4.8))
+    plt.plot(t, S, linewidth=2.2, label="Suscetíveis $S(t)$")
+    plt.plot(t, E, linewidth=2.2, label="Expostos $E(t)$")
+    plt.plot(t, I, linewidth=2.2, label="Infectados $I(t)$")
+    finalizar_grafico(
+        titulo=f"Dinâmica das populações de lagartas - {titulo_prefixo}",
+        xlabel="Tempo (dias)",
+        ylabel="População",
+        nome_arquivo=f"{prefixo_arquivo}_sei.png"
+    )
 
     # Figura 2: V(t)
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, V_plot, label="V(t)")
-    plt.yscale("log")
-    plt.title(f"Dinamica de V - {titulo_prefixo}")
-    plt.xlabel("Tempo (dias)")
-    plt.ylabel("Carga viral")
-    plt.grid(True)
-    plt.legend(loc="best")
-    plt.tight_layout()
-    plt.savefig(f"{prefixo_arquivo}_v.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.figure(figsize=(10, 4.8))
+    plt.plot(t, V_plot, linewidth=2.4, label="Carga viral $V(t)$")
+    finalizar_grafico(
+        titulo=f"Dinâmica da carga viral ambiental - {titulo_prefixo}",
+        xlabel="Tempo (dias)",
+        ylabel="Carga viral",
+        nome_arquivo=f"{prefixo_arquivo}_v.png",
+        usar_log=True
+    )
 
     # Figura 3: lambda(V(t))
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, lam, label=r"$\lambda(V(t))$")
-    plt.title(f"Forca de infeccao ao longo do tempo - {titulo_prefixo}")
-    plt.xlabel("Tempo (dias)")
-    plt.ylabel(r"$\lambda(V)$")
-    plt.grid(True)
-    plt.legend(loc="best")
-    plt.tight_layout()
-    plt.savefig(f"{prefixo_arquivo}_lambda.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.figure(figsize=(10, 4.8))
+    plt.plot(t, lam, linewidth=2.4, label=r"Força de infecção $\lambda(V(t))$")
+    finalizar_grafico(
+        titulo=f"Força de infecção - {titulo_prefixo}",
+        xlabel="Tempo (dias)",
+        ylabel=r"$\lambda(V)$",
+        nome_arquivo=f"{prefixo_arquivo}_lambda.png"
+    )
 
 # =========================================================
-# Programa principal
+# GRAFICO SEPARADO: R(V) x lambda(V)
+# =========================================================
+def plot_RV_vs_lambda_separado(S, V, p, titulo_prefixo, nome_arquivo):
+    lam = incidence(V, p["beta"], p["k"], p["b"])
+    RV = R_V(S, V, p)
+
+    plt.figure(figsize=(10, 4.8))
+    plt.plot(lam, RV, linewidth=2.6, label=rf"$R(V)$ vs. $\lambda(V)$")
+    finalizar_grafico(
+        titulo=rf"Relação entre a força de infecção e $R(V)$ - {titulo_prefixo}",
+        xlabel=rf"Força de infecção $\lambda(V)$",
+        ylabel=rf"$R(V)$",
+        nome_arquivo=nome_arquivo
+    )
+
+# =========================================================
+# PROGRAMA PRINCIPAL
 # =========================================================
 if __name__ == "__main__":
     # Intervalo temporal
     t0 = 0.0
-    tf = 200.0
+    tf = 40.0
     dt = 0.001
 
     # Vetor de condicoes iniciais
     y0 = [params["S0"], params["E0"], params["I0"], params["V0"]]
 
     # Dose por aplicacao
-    Q0 = 3e9
+    Q0 = 3e6
 
     # Cenario A: aplicacao unica inicial
     uA = u_pulso_inicial_factory(Q0=Q0, dt=dt, t_aplic=0.0)
 
     # Cenario B: reaplicacoes periodicas
-    tempos_reaplicacao = [
-        0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0,
-        100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0,
-        180.0, 190.0, 200.0
-    ]
+    tempos_reaplicacao = [0.0, 7.0, 14.0, 21.0, 28.0, 35.0]
     uB = u_reaplicacoes_factory(Q0=Q0, dt=dt, tempos=tempos_reaplicacao)
 
     # Simulacoes
@@ -185,16 +216,62 @@ if __name__ == "__main__":
     SA, EA, IA, VA = YA.T
     SB, EB, IB, VB = YB.T
 
-    # Figuras do cenario A
+    # Figuras separadas do cenario A
     plot_scenario_separado(
         t, SA, EA, IA, VA, params,
-        titulo_prefixo="Aplicacao unica inicial",
+        titulo_prefixo="aplicação única inicial",
         prefixo_arquivo="sim_uni"
     )
 
-    # Figuras do cenario B
+    # Figuras separadas do cenario B
     plot_scenario_separado(
         t, SB, EB, IB, VB, params,
-        titulo_prefixo="Cenario com reaplicacoes",
+        titulo_prefixo="reaplicações periódicas",
         prefixo_arquivo="sim_rea"
+    )
+
+    # =========================================================
+    # GRAFICO UNICO: COMPARACAO DA POPULACAO TOTAL
+    # =========================================================
+    NA = SA + EA + IA
+    NB = SB + EB + IB
+
+    plt.figure(figsize=(10, 4.8))
+    plt.plot(t, NA, linewidth=2.6, label="Aplicação única inicial")
+    plt.plot(t, NB, linewidth=2.6, label="Reaplicações periódicas")
+    finalizar_grafico(
+        titulo="Comparação da população total de lagartas",
+        xlabel="Tempo (dias)",
+        ylabel="População total",
+        nome_arquivo="comparacao_total_lagartas.png"
+    )
+
+    # =========================================================
+    # GRAFICO ADICIONAL: COMPARACAO ENTRE 1 A 5 APLICACOES
+    # =========================================================
+    cenarios_aplicacao = {
+        "1 aplicação": [0.0],
+        "2 aplicações": [0.0, 20.0],
+        "3 aplicações": [0.0, 15.0, 30.0],
+        "4 aplicações": [0.0, 10.0, 20.0, 30.0],
+        "5 aplicações": [0.0, 9.0, 18.0, 27.0, 36.0],
+        "6 aplicações": [0.0, 7.0, 14.0, 21.0, 28.0, 35.0],
+    }
+
+    plt.figure(figsize=(10, 4.8))
+
+    for rotulo, tempos in cenarios_aplicacao.items():
+        u_cenario = u_reaplicacoes_factory(Q0=Q0, dt=dt, tempos=tempos)
+        _, Y_cenario = rk4(rhs, t0, tf, y0, dt, args=(params, u_cenario))
+
+        S_c, E_c, I_c, V_c = Y_cenario.T
+        N_c = S_c + E_c + I_c
+
+        plt.plot(t, N_c, linewidth=2.2, label=rotulo)
+
+    finalizar_grafico(
+        titulo="Comparação da população total para diferentes números de aplicações",
+        xlabel="Tempo (dias)",
+        ylabel="População total",
+        nome_arquivo="comparacao_1_a_5_aplicacoes.png"
     )
